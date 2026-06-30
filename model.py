@@ -21,69 +21,6 @@ def preprocess_data():
     return conversion_df, field_goal_df, punt_df
 
 
-def prepare_scenario_features(
-    yards_to_go,
-    yardline,
-    team_run_tendency,
-    team_pass_tendency,
-    off_def_strength_diff,
-    team_recent_epa,
-    opp_recent_epa,
-    is_goal_to_go,
-    is_red_zone,
-    short_yardage,
-    quarter,
-    seconds_remaining,
-    score_diff,
-    is_home,
-    wp,
-    def_wp,
-    wp_delta,
-    team_recent_success,
-    opp_recent_success,
-):
-    return pd.DataFrame(
-        [
-            {
-                "yards_to_go": yards_to_go,
-                "yardline": yardline,
-                "team_run_tendency": team_run_tendency,
-                "team_pass_tendency": team_pass_tendency,
-                "off_def_strength_diff": off_def_strength_diff,
-                "team_recent_epa": team_recent_epa,
-                "opp_recent_epa": opp_recent_epa,
-                "is_goal_to_go": is_goal_to_go,
-                "is_red_zone": is_red_zone,
-                "short_yardage": short_yardage,
-                "quarter": quarter,
-                "seconds_remaining": seconds_remaining,
-                "score_diff": score_diff,
-                "is_home": is_home,
-                "wp": wp,
-                "def_wp": def_wp,
-                "wp_delta": wp_delta,
-                "team_recent_success": team_recent_success,
-                "opp_recent_success": opp_recent_success,
-            }
-        ]
-    )
-
-
-def predict_success_probability(model, scenario_df, feature_names):
-    if isinstance(scenario_df, dict):
-        scenario_df = pd.DataFrame([scenario_df])
-    feature_set = scenario_df[feature_names].copy().fillna(0)
-    return float(model.predict_proba(feature_set)[:, 1][0])
-
-
-def estimate_wp_after_outcome(current_state, action, outcome):
-    return
-
-
-def calculate_expected_wp(prob_success, wp_if_success, wp_if_failure):
-    return float(prob_success * wp_if_success + (1 - prob_success) * wp_if_failure)
-
-
 def build_conversion_model(conversion_df):
     model_df = conversion_df.copy()
     model_df = model_df.dropna(
@@ -160,6 +97,7 @@ def build_conversion_model(conversion_df):
         "team_recent_success",
         "opp_recent_success",
     ]
+
     feature_df = model_df[features].copy().fillna(0)
     y = model_df["success"]
 
@@ -189,12 +127,116 @@ def build_punt_model(punt_df):
     return
 
 
+def prepare_features(
+    yards_to_go,
+    yardline,
+    team_run_tendency,
+    team_pass_tendency,
+    off_def_strength_diff,
+    team_recent_epa,
+    opp_recent_epa,
+    is_goal_to_go,
+    is_red_zone,
+    short_yardage,
+    quarter,
+    seconds_remaining,
+    score_diff,
+    is_home,
+    wp,
+    def_wp,
+    wp_delta,
+    team_recent_success,
+    opp_recent_success,
+):
+    # Format user-entered scenario details as a DataFrame
+    return pd.DataFrame(
+        [
+            {
+                "yards_to_go": yards_to_go,
+                "yardline": yardline,
+                "team_run_tendency": team_run_tendency,
+                "team_pass_tendency": team_pass_tendency,
+                "off_def_strength_diff": off_def_strength_diff,
+                "team_recent_epa": team_recent_epa,
+                "opp_recent_epa": opp_recent_epa,
+                "is_goal_to_go": is_goal_to_go,
+                "is_red_zone": is_red_zone,
+                "short_yardage": short_yardage,
+                "quarter": quarter,
+                "seconds_remaining": seconds_remaining,
+                "score_diff": score_diff,
+                "is_home": is_home,
+                "wp": wp,
+                "def_wp": def_wp,
+                "wp_delta": wp_delta,
+                "team_recent_success": team_recent_success,
+                "opp_recent_success": opp_recent_success,
+            }
+        ]
+    )
+
+
+def predict_success_probability(model, state_df, feature_names):
+    features = state_df[feature_names].copy().fillna(0)
+    return float(model.predict_proba(features)[:, 1][0])
+
+
+def project_conversion_wp(state_df, outcome):
+    state = state_df.iloc[0].to_dict()
+    current_wp = state.get("wp", state.get("current_wp", 0.5))
+    yardline = state.get("yardline", 50)
+    score_diff = state.get("score_diff", 0)
+    is_goal_to_go = state.get("is_goal_to_go", 0)
+
+    # Slightly adjust win probability based on situation
+    if outcome == "success":
+        adjustment = 0.03
+        if yardline <= 35:
+            adjustment += 0.01
+        if is_goal_to_go == 1:
+            adjustment += 0.01
+    else:
+        adjustment = -0.03
+        if yardline >= 65:
+            adjustment -= 0.01
+        if score_diff < 0:
+            adjustment -= 0.01
+
+    projected_wp = current_wp + adjustment
+    return projected_wp
+
+
+def project_field_goal_wp(state_df, outcome):
+    return
+
+
+def project_punt_wp(state_df, outcome):
+    return
+
+
+def estimate_wp_after_outcome(state_df, action, outcome):
+    if action == "conversion":
+        return project_conversion_wp(state_df, outcome)
+    elif action == "field_goal":
+        return project_field_goal_wp(state_df, outcome)
+    else:
+        return
+
+
+def calculate_expected_wp(prob_success, wp_if_success, wp_if_failure):
+    return (prob_success * wp_if_success + (1 - prob_success) * wp_if_failure)
+
+
 def main():
     conversion_df, field_goal_df, punt_df = preprocess_data()
 
     conversion_model, conversion_features = build_conversion_model(conversion_df)
     with open("conversion_model.pkl", "wb") as f:
-        pickle.dump({"model": conversion_model, "features": conversion_features, "target_name": "conversion_success"}, f)
+        pickle.dump({"model": conversion_model, "features": conversion_features, "target_name": "conversion_probability"}, f)
+
+    field_goal_model, field_goal_features = build_field_goal_model(field_goal_df)
+    with open("field_goal_model.pkl", "wb") as f:
+        pickle.dump({"model": field_goal_model, "features": field_goal_features, "target_name": "field_goal_probability"}, f)
 
 
 if __name__ == "__main__":
