@@ -98,7 +98,7 @@ def build_conversion_model(conversion_df):
         "opp_recent_success",
     ]
 
-    feature_df = model_df[features].copy().fillna(0)
+    feature_df = model_df[features].fillna(0)
     y = model_df["success"]
 
     X_train, X_test, y_train, y_test = train_test_split(feature_df, y, test_size=0.25, stratify=y, random_state=42)
@@ -111,6 +111,7 @@ def build_conversion_model(conversion_df):
         random_state=42,
         n_jobs=-1,
     )
+
     model.fit(X_train, y_train)
     y_prob = model.predict_proba(X_test)[:, 1]
 
@@ -178,40 +179,91 @@ def prepare_features(
 
 def predict_success_probability(model, state_df, feature_names):
     features = state_df[feature_names].copy().fillna(0)
-    return float(model.predict_proba(features)[:, 1][0])
+    return model.predict_proba(features)[:, 1][0]
 
 
 def project_conversion_wp(state_df, outcome):
     state = state_df.iloc[0].to_dict()
-    current_wp = state.get("wp", state.get("current_wp", 0.5))
+    current_wp = state.get("wp", 0.5)
     yardline = state.get("yardline", 50)
     score_diff = state.get("score_diff", 0)
     is_goal_to_go = state.get("is_goal_to_go", 0)
+    seconds_remaining = state.get("seconds_remaining", 1800)
 
-    # Slightly adjust win probability based on situation
+    # Adjust win probability based on game state
     if outcome == "success":
-        adjustment = 0.03
+        adjustment = 0.02
         if yardline <= 35:
-            adjustment += 0.01
+            adjustment = 0.03
+        if yardline <= 20:
+            adjustment = 0.04
         if is_goal_to_go == 1:
-            adjustment += 0.01
+            adjustment = 0.05
     else:
-        adjustment = -0.03
-        if yardline >= 65:
-            adjustment -= 0.01
+        adjustment = -0.02
+        if yardline >= 40:
+            adjustment = -0.03
+        if yardline >= 55:
+            adjustment = -0.04
         if score_diff < 0:
             adjustment -= 0.01
+            if seconds_remaining <= 300:
+                adjustment -= 0.01
 
-    projected_wp = current_wp + adjustment
-    return projected_wp
+    return max(min(current_wp + adjustment, 1), 0)
 
 
 def project_field_goal_wp(state_df, outcome):
-    return
+    state = state_df.iloc[0].to_dict()
+    current_wp = state.get("wp", 0.5)
+    yardline = state.get("yardline", 50)
+    score_diff = state.get("score_diff", 0)
+    quarter = state.get("quarter", 3)
+    seconds_remaining = state.get("seconds_remaining", 1800)
+
+    if outcome == "success":
+        adjustment = 0.03
+        if score_diff >= 4:
+            adjustment = 0.05
+        if quarter == 4:
+            adjustment += 0.01
+        if seconds_remaining <= 300:
+            adjustment += 0.02
+
+    else:
+        adjustment = -0.03
+        if yardline >= 15:
+            adjustment = -0.04
+        if yardline >= 30:
+            adjustment = -0.05
+        if quarter == 4:
+            adjustment -= 0.01
+        if score_diff < 0:
+            adjustment -= 0.01
+            if seconds_remaining <= 300:
+                adjustment -= 0.01
+
+    return max(min(current_wp + adjustment, 1), 0)
 
 
 def project_punt_wp(state_df, outcome):
-    return
+    state = state_df.iloc[0].to_dict()
+    current_wp = state.get("wp", 0.5)
+    score_diff = state.get("score_diff", 0)
+    seconds_remaining = state.get("seconds_remaining", 1800)
+
+    if outcome == "success":
+        adjustment = 0.01
+        if score_diff >= 0:
+            adjustment = 0.02
+    else:
+        adjustment = -0.02
+        if score_diff < 0:
+            adjustment = -0.03
+            if seconds_remaining <= 300:
+                adjustment = -0.04
+
+    return max(min(current_wp + adjustment, 1), 0)
 
 
 def estimate_wp_after_outcome(state_df, action, outcome):
@@ -220,7 +272,7 @@ def estimate_wp_after_outcome(state_df, action, outcome):
     elif action == "field_goal":
         return project_field_goal_wp(state_df, outcome)
     else:
-        return
+        return project_punt_wp(state_df, outcome)
 
 
 def calculate_expected_wp(prob_success, wp_if_success, wp_if_failure):
