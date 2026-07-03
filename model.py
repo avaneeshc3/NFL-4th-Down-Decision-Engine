@@ -2,6 +2,7 @@ import nflreadpy
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
 import pickle
@@ -11,7 +12,9 @@ def preprocess_data():
     # Load all available play-by-play historical data (from 1999)
     pbp_df = nflreadpy.load_pbp(seasons=[2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]).to_pandas()
     pbp_df = pbp_df.drop_duplicates()
-    pbp_df = pbp_df.dropna(subset=["down", "field_goal_attempt", "punt_attempt"])
+    pbp_df = pbp_df.dropna(subset=["down", "field_goal_attempt", "punt_attempt", "wp"])
+    pbp_df = pbp_df.sort_values(["game_id", "play_id"])
+    pbp_df["wp_after"] = pbp_df.groupby("game_id")["wp"].shift(-1)
 
     # Filter to respective play type attempts for each 4th down option - go for it, kick field goal, or punt
     conversion_df = pbp_df[(pbp_df["down"] == 4) & (pbp_df["field_goal_attempt"] != 1) & (pbp_df["punt_attempt"] != 1)]
@@ -71,6 +74,7 @@ def build_conversion_model(conversion_df):
     model_df["wp"] = model_df["wp"].fillna(0.5).astype(float)
     model_df["def_wp"] = model_df["def_wp"].fillna(0.5).astype(float)
     model_df["wp_delta"] = model_df["wp"] - model_df["def_wp"]
+    model_df["wp_after"] = model_df["wp_after"].fillna(model_df["wp"])
 
     model_df["success"] = ((model_df["yards_gained"].fillna(0) >= model_df["yards_to_go"]) | (model_df["touchdown"].fillna(0) == 1)).astype(int)
     model_df["team_recent_success"] = model_df.groupby(["season", "posteam"])["success"].transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean())
@@ -102,7 +106,7 @@ def build_conversion_model(conversion_df):
     y = model_df["success"]
 
     X_train, X_test, y_train, y_test = train_test_split(feature_df, y, test_size=0.25, stratify=y, random_state=42)
-    # Build RandomForestClassifier
+    # Build Random Forest Classifier model
     model = RandomForestClassifier(
         n_estimators=400,
         max_depth=10,
@@ -121,7 +125,48 @@ def build_conversion_model(conversion_df):
 
 
 def build_field_goal_model(field_goal_df):
-    return
+    model_df = field_goal_df.copy()
+    model_df = model_df.dropna(subset=["kick_distance", "field_goal_result"])
+
+    # Feature engineering
+    model_df["kick_distance"] = model_df["kick_distance"].fillna(model_df["yardline"]).astype(float)
+    model_df["quarter"] = model_df["qtr"].fillna(5).astype(float)
+    model_df["seconds_remaining"] = model_df["game_seconds_remaining"].fillna(1800).astype(float)
+    model_df["score_diff"] = model_df["score_differential"].fillna(0).astype(float)
+    model_df["is_home"] = (model_df["posteam"] == model_df["home_team"]).astype(int)
+    model_df["wp"] = model_df["wp"].fillna(0.5).astype(float)
+    model_df["temp"] = model_df["temp"].fillna(70).astype(float)
+    model_df["wind"] = model_df["wind"].fillna(0).astype(float)
+
+    model_df["success"] = (model_df["field_goal_result"] == "made").astype(int)
+
+    features = [
+        "kick_distance",
+        "quarter",
+        "seconds_remaining",
+        "score_diff",
+        "is_home",
+        "wp",
+        "temp",
+        "wind",
+    ]
+
+    feature_df = model_df[features].fillna(0)
+    y = model_df["success"]
+
+    X_train, X_test, y_train, y_test = train_test_split(feature_df, y, test_size=0.25, stratify=y, random_state=42)
+    # Build Logistic Regression model (very well-suited for field goal success prediction)
+    model = LogisticRegression(
+        max_iter=1000,
+        random_state=42,
+    )
+
+    model.fit(X_train, y_train)
+    y_prob = model.predict_proba(X_test)[:, 1]
+
+    print("Field goal model ROC-AUC score:", roc_auc_score(y_test, y_prob))
+
+    return model, features
 
 
 def build_punt_model(punt_df):
@@ -256,6 +301,9 @@ def project_punt_wp(state_df, outcome):
         adjustment = 0.01
         if score_diff >= 0:
             adjustment = 0.02
+        else:
+            if seconds_remaining <= 300:
+                adjustment = -0.02
     else:
         adjustment = -0.02
         if score_diff < 0:
