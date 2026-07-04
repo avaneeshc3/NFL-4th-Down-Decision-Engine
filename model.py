@@ -10,13 +10,14 @@ import pickle
 
 def preprocess_data():
     # Load all available play-by-play historical data (from 1999)
-    pbp_df = nflreadpy.load_pbp(seasons=[2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]).to_pandas()
+    pbp_df = nflreadpy.load_pbp(seasons=True).to_pandas()
     pbp_df = pbp_df.drop_duplicates()
     pbp_df = pbp_df.dropna(subset=["down", "field_goal_attempt", "punt_attempt", "wp"])
+    # Create a win probability after play column (using win probability at start of the next play) for expected win probability calculation
     pbp_df = pbp_df.sort_values(["game_id", "play_id"])
     pbp_df["wp_after"] = pbp_df.groupby("game_id")["wp"].shift(-1)
 
-    # Filter to respective play type attempts for each 4th down option - go for it, kick field goal, or punt
+    # Filter to respective play type attempts for each play option - go for it, kick field goal, or punt
     conversion_df = pbp_df[(pbp_df["down"] == 4) & (pbp_df["field_goal_attempt"] != 1) & (pbp_df["punt_attempt"] != 1)]
     field_goal_df = pbp_df[(pbp_df["down"] == 4) & (pbp_df["field_goal_attempt"] == 1)]
     punt_df = pbp_df[(pbp_df["down"] == 4) & (pbp_df["punt_attempt"] == 1)]
@@ -25,6 +26,9 @@ def preprocess_data():
 
 
 def build_conversion_model(conversion_df):
+    """
+    Creates a model that predicts the probability of successfully converting to a 1st down in the situation.
+    """
     model_df = conversion_df.copy()
     model_df = model_df.dropna(
         subset=[
@@ -125,11 +129,14 @@ def build_conversion_model(conversion_df):
 
 
 def build_field_goal_model(field_goal_df):
+    """
+    Creates a model that predicts the probability of making a field goal in the situation.
+    """
     model_df = field_goal_df.copy()
     model_df = model_df.dropna(subset=["kick_distance", "field_goal_result"])
 
     # Feature engineering
-    model_df["kick_distance"] = model_df["kick_distance"].fillna(model_df["yardline"]).astype(float)
+    model_df["kick_distance"] = model_df["kick_distance"].astype(float)
     model_df["quarter"] = model_df["qtr"].fillna(5).astype(float)
     model_df["seconds_remaining"] = model_df["game_seconds_remaining"].fillna(1800).astype(float)
     model_df["score_diff"] = model_df["score_differential"].fillna(0).astype(float)
@@ -170,7 +177,74 @@ def build_field_goal_model(field_goal_df):
 
 
 def build_punt_model(punt_df):
-    return
+    """
+    Creates a model that predicts the probability of making a successful punt (opponent starts within their 25-yard line) in the situation.
+    """
+    model_df = punt_df.copy()
+    model_df = model_df.dropna(
+        subset=[
+            "yardline_100",
+            "kick_distance",
+            "return_yards",
+            "punt_blocked",
+            "qtr",
+            "game_seconds_remaining",
+            "score_differential",
+            "posteam",
+            "home_team",
+            "wp",
+            "temp",
+            "wind",
+        ]
+    )
+    # Filter out blocked punts
+    model_df = model_df[model_df["punt_blocked"].fillna(0) == 0]
+
+    # Feature engineering
+    model_df["yardline"] = model_df["yardline_100"].astype(float)
+    model_df["kick_distance"] = model_df["kick_distance"].astype(float)
+    model_df["quarter"] = model_df["qtr"].fillna(5).astype(float)
+    model_df["seconds_remaining"] = model_df["game_seconds_remaining"].fillna(1800).astype(float)
+    model_df["score_diff"] = model_df["score_differential"].fillna(0).astype(float)
+    model_df["is_home"] = (model_df["posteam"] == model_df["home_team"]).astype(int)
+    model_df["wp"] = model_df["wp"].fillna(0.5).astype(float)
+    model_df["temp"] = model_df["temp"].fillna(70).astype(float)
+    model_df["wind"] = model_df["wind"].fillna(0).astype(float)
+
+    model_df["success"] = (model_df["yardline"] - model_df["kick_distance"] + model_df["return_yards"] <= 25).astype(int)
+
+    features = [
+        "yardline",
+        "kick_distance",
+        "quarter",
+        "seconds_remaining",
+        "score_diff",
+        "is_home",
+        "wp",
+        "temp",
+        "wind",
+    ]
+
+    feature_df = model_df[features].fillna(0)
+    y = model_df["success"]
+
+    X_train, X_test, y_train, y_test = train_test_split(feature_df, y, test_size=0.25, stratify=y, random_state=42)
+    # Build Random Forest Classifier model
+    model = RandomForestClassifier(
+        n_estimators=300,
+        max_depth=8,
+        min_samples_leaf=10,
+        class_weight="balanced_subsample",
+        random_state=42,
+        n_jobs=-1,
+    )
+
+    model.fit(X_train, y_train)
+    y_prob = model.predict_proba(X_test)[:, 1]
+
+    print("Punt model ROC-AUC score:", roc_auc_score(y_test, y_prob))
+
+    return model, features
 
 
 def prepare_features(
@@ -193,8 +267,11 @@ def prepare_features(
     wp_delta,
     team_recent_success,
     opp_recent_success,
+    kick_distance,
+    temp,
+    wind
 ):
-    # Format user-entered scenario details as a DataFrame
+    # Format user-entered game state details as a DataFrame for model prediction
     return pd.DataFrame(
         [
             {
@@ -217,12 +294,16 @@ def prepare_features(
                 "wp_delta": wp_delta,
                 "team_recent_success": team_recent_success,
                 "opp_recent_success": opp_recent_success,
+                "kick_distance": kick_distance,
+                "temp": temp,
+                "wind": wind
             }
         ]
     )
 
 
 def predict_success_probability(model, state_df, feature_names):
+    # Predict the success probability of the chosen play option using the relevant model and features
     features = state_df[feature_names].copy().fillna(0)
     return model.predict_proba(features)[:, 1][0]
 
@@ -328,6 +409,9 @@ def calculate_expected_wp(prob_success, wp_if_success, wp_if_failure):
 
 
 def main():
+    """
+    Receives the model and features for each play option, pickling them for predictions on user-entered game states.
+    """
     conversion_df, field_goal_df, punt_df = preprocess_data()
 
     conversion_model, conversion_features = build_conversion_model(conversion_df)
@@ -337,6 +421,10 @@ def main():
     field_goal_model, field_goal_features = build_field_goal_model(field_goal_df)
     with open("field_goal_model.pkl", "wb") as f:
         pickle.dump({"model": field_goal_model, "features": field_goal_features, "target_name": "field_goal_probability"}, f)
+
+    punt_model, punt_features = build_punt_model(punt_df)
+    with open("punt_model.pkl", "wb") as f:
+        pickle.dump({"model": punt_model, "features": punt_features, "target_name": "punt_probability"}, f)
 
 
 if __name__ == "__main__":
