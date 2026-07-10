@@ -6,6 +6,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
 import pickle
+import random
 
 
 def preprocess_data():
@@ -241,9 +242,8 @@ def build_punt_success_model(punt_df):
     return model, features, model_df
 
 
-def predict_success_prob(model, state_df, features):
-    # Predict the success probability of the chosen play option using the relevant model and features
-    feature_df = state_df[features].copy()
+def predict_success_prob(model, current_state, features):
+    feature_df = current_state[features].copy()
     return model.predict_proba(feature_df)[:, 1][0]
 
 
@@ -266,10 +266,23 @@ def create_wp_features(df):
     return df
 
 
-def build_wp_models(df, features, model_name):
+def build_wp_models(df, model_name):
     """
-    Creates models that predict the after-play win probabilities for both attempt outcomes (success/failure).
+    Creates models that predict the post-play win probabilities for both attempt outcomes (success/failure).
     """
+    features = [
+        "yardline",
+        "quarter",
+        "seconds_remaining",
+        "score_diff",
+        "is_home",
+        "is_goal_to_go",
+        "is_red_zone",
+        "team_recent_epa",
+        "opp_recent_epa",
+        "off_def_strength_diff"
+    ]
+
     df = df.sort_values(["game_id", "play_id"]).copy()
     # Create a win probability after play column (using win probability at start of the next play) for expected win probability calculation
     df["wp_after"] = df.groupby("game_id")["wp"].shift(-1)
@@ -283,11 +296,11 @@ def build_wp_models(df, features, model_name):
     # Build separate models for if the attempt succeeds or fails
     models = {}
     for outcome_value, outcome_name in [(1, "success"), (0, "failure")]:
-        sub = df[df["success"] == outcome_value]
-        X = sub[next_features].fillna(0)
-        y = sub["wp_after"]
+        matches = df[df["success"] == outcome_value]
+        feature_df = matches[next_features].fillna(0)
+        y = matches["wp_after"]
 
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42)
+        X_train, X_test, y_train, y_test = train_test_split(feature_df, y, test_size=0.25, random_state=42)
         model = RandomForestRegressor(
             n_estimators=200,
             max_depth=12,
@@ -304,9 +317,19 @@ def build_wp_models(df, features, model_name):
     return models
 
 
-def build_conversion_wp_models(df):
-    df = df.copy()
-    df["success"] = ((df["yards_gained"].fillna(0) >= df["ydstogo"]) | (df["touchdown"].fillna(0) == 1)).astype(int)
+def build_conversion_wp_models(conversion_df):
+    return build_wp_models(conversion_df, "Conversion")
+
+
+def build_field_goal_wp_models(field_goal_df):
+    return build_wp_models(field_goal_df, "Field goal")
+
+
+def build_punt_wp_models(punt_df):
+    return build_wp_models(punt_df, "Punt")
+
+
+def predict_wp_after_play(model, current_state):
     features = [
         "yardline",
         "quarter",
@@ -319,52 +342,105 @@ def build_conversion_wp_models(df):
         "opp_recent_epa",
         "off_def_strength_diff"
     ]
-    return build_wp_models(df, features, "Conversion")
 
-
-def build_field_goal_wp_models(df):
-    df = df.copy()
-    df["success"] = (df["field_goal_result"] == "made").astype(int)
-    features = [
-        "yardline",
-        "quarter",
-        "seconds_remaining",
-        "score_diff",
-        "is_home",
-        "is_goal_to_go",
-        "is_red_zone",
-        "team_recent_epa",
-        "opp_recent_epa",
-        "off_def_strength_diff"
-    ]
-    return build_wp_models(df, features, "Field goal")
-
-
-def build_punt_wp_models(df):
-    df = df.copy()
-    df["success"] = (df["yardline_100"] - df["kick_distance"] + df["return_yards"] <= 25).astype(int)
-    features = [
-        "yardline",
-        "quarter",
-        "seconds_remaining",
-        "score_diff",
-        "is_home",
-        "is_goal_to_go",
-        "is_red_zone",
-        "team_recent_epa",
-        "opp_recent_epa",
-        "off_def_strength_diff"
-    ]
-    return build_wp_models(df, features, "Punt")
-
-
-def predict_wp_after_play(model, state_df, features):
-    feature_df = state_df[features].copy()
+    feature_df = current_state[features].copy()
     wp_after = model.predict(feature_df)[0]
-    return max(min(wp_after, 1), 0)
+    return np.clip(wp_after, 0, 1)
+
+
+def swap_possession(state):
+    """
+    Updates the game state to reflect possession by the opposing team in the event of a failed conversion attempt or any field goal/punt attempt.
+    """
+    state = state.copy()
+    state["score_diff"] = -state["score_diff"]
+    state["is_home"] = 1 - state["is_home"]
+    state[["team_recent_epa", "opp_recent_epa"]] = state[["opp_recent_epa", "team_recent_epa"]]
+    state["off_def_strength_diff"] = -state["off_def_strength_diff"]
+    state["is_goal_to_go"] = (state["yardline"] <= 10).astype(int)
+    state["is_red_zone"] = (state["yardline"] <= 20).astype(int)
+    return state
+
+
+def simulate_post_conversion_state(current_state, success):
+    """
+    Simulates the post-play game state following a successful or failed conversion attempt for win probability prediction.
+    """
+    state = current_state.copy()
+    state["seconds_remaining"] = max(state["seconds_remaining"].astype(float) - 6, 0)
+    if success:
+        # If successful conversion would mean a touchdown
+        if state["yardline"] - state["yards_to_go"] == 0:
+            state["score_diff"] += 7
+            state["yardline"] = 75
+            state = swap_possession(state)
+        else:
+            state["yardline"] = state["yardline"] - state["yards_to_go"]
+    else:
+        state["yardline"] = 100 - state["yardline"]
+        state = swap_possession(state)
+
+    return state
+
+
+def simulate_post_field_goal_state(current_state, success):
+    """
+    Simulates the post-play game state following a field goal make or miss for win probability prediction.
+    """
+    state = current_state.copy()
+    state["seconds_remaining"] = max(state["seconds_remaining"].astype(float) - 5, 0)
+    if success:
+        state["score_diff"] += 3
+        state["yardline"] = 75
+    else:
+        state["yardline"] = 100 - (state["yardline"] + 7)
+
+    state = swap_possession(state)
+    return state
+
+
+def simulate_post_punt_state(current_state, success):
+    """
+    Simulates the post-play game state following a "successful" or "failed" punt for win probability prediction.
+    """
+    state = current_state.copy()
+    state["seconds_remaining"] = (state["seconds_remaining"].astype(float) - 6, 0)
+
+    if success:
+        state["yardline"] = random.randint(75, 90)
+
+    else:
+        state["yardline"] = random.randint(60, 70)
+
+    state = swap_possession(state)
+    return state
+
+
+def predict_wp_outcomes(current_state, wp_models, simulator):
+    """
+    Returns the predicted post-play win probabilities for both attempt outcomes (success/failure) for expected win probability calculation.
+    """
+    success_state = simulator(current_state, True)
+    failure_state = simulator(current_state, False)
+    return predict_wp_after_play(wp_models["success"], success_state), predict_wp_after_play(wp_models["failure"], failure_state)
+
+
+def predict_conversion_wp_outcomes(current_state, conversion_wp_models):
+    return predict_wp_outcomes(current_state, conversion_wp_models, simulate_post_conversion_state)
+
+
+def predict_field_goal_wp_outcomes(current_state, field_goal_wp_models):
+    return predict_wp_outcomes(current_state, field_goal_wp_models, simulate_post_field_goal_state)
+
+
+def predict_punt_wp_outcomes(current_state, punt_wp_models):
+    return predict_wp_outcomes(current_state, punt_wp_models, simulate_post_punt_state)
 
 
 def calculate_expected_wp(success_prob, wp_if_success, wp_if_failure):
+    """
+    Calculates the expected win probability of the play decision, taking into account the success probability of the play and the win probabilities if it succeeds/fails.
+    """
     return (success_prob * wp_if_success + (1 - success_prob) * wp_if_failure)
 
 
@@ -425,47 +501,38 @@ def main():
     """
     conversion_df, field_goal_df, punt_df = preprocess_data()
 
-    conversion_success_model, conversion_features, conversion_model_df = build_conversion_success_model(conversion_df)
+    conversion_success_model, conversion_success_features, conversion_model_df = build_conversion_success_model(conversion_df)
     with open("conversion_success_model.pkl", "wb") as f:
         pickle.dump({
                 "model": conversion_success_model,
-                "features": conversion_features
+                "features": conversion_success_features
         }, f)
 
     conversion_wp_models = build_conversion_wp_models(conversion_model_df)
     with open("conversion_wp_models.pkl", "wb") as f:
-        pickle.dump({
-                "success_model": conversion_wp_models["success"],
-                "failure_model": conversion_wp_models["failure"]
-        }, f)
+        pickle.dump(conversion_wp_models, f)
 
-    field_goal_success_model, field_goal_features, field_goal_model_df = build_field_goal_success_model(field_goal_df)
+    field_goal_success_model, field_goal_success_features, field_goal_model_df = build_field_goal_success_model(field_goal_df)
     with open("field_goal_success_model.pkl", "wb") as f:
         pickle.dump({
                 "model": field_goal_success_model,
-                "features": field_goal_features
+                "features": field_goal_success_features
         }, f)
 
     field_goal_wp_models = build_field_goal_wp_models(field_goal_model_df)
     with open("field_goal_wp_models.pkl", "wb") as f:
-        pickle.dump({
-                "success_model": field_goal_wp_models["success"],
-                "failure_model": field_goal_wp_models["failure"]
-        }, f)
+        pickle.dump(field_goal_wp_models, f)
 
-    punt_success_model, punt_features, punt_model_df = build_punt_success_model(punt_df)
+    punt_success_model, punt_success_features, punt_model_df = build_punt_success_model(punt_df)
     with open("punt_success_model.pkl", "wb") as f:
         pickle.dump({
                 "model": punt_success_model,
-                "features": punt_features
+                "features": punt_success_features
         }, f)
 
     punt_wp_models = build_punt_wp_models(punt_model_df)
     with open("punt_wp_models.pkl", "wb") as f:
-        pickle.dump({
-                "success_model": punt_wp_models["success"],
-                "failure_model": punt_wp_models["failure"]
-        }, f)
+        pickle.dump(punt_wp_models, f)
 
 
 if __name__ == "__main__":
