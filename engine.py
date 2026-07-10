@@ -18,7 +18,7 @@ def preprocess_data():
     # Create a win probability after play column (using win probability at start of the next play) for expected win probability calculation
     pbp_df["wp_after"] = pbp_df.groupby("game_id")["wp"].shift(-1)
 
-    # Filter to respective play type attempts for each play option - go for it, kick field goal, or punt
+    # Filter to respective play type attempts for each 4th down play option - go for it, kick field goal, or punt
     conversion_df = pbp_df[(pbp_df["down"] == 4) & (pbp_df["field_goal_attempt"] != 1) & (pbp_df["punt_attempt"] != 1)]
     field_goal_df = pbp_df[(pbp_df["down"] == 4) & (pbp_df["field_goal_attempt"] == 1)]
     punt_df = pbp_df[(pbp_df["down"] == 4) & (pbp_df["punt_attempt"] == 1)]
@@ -367,20 +367,26 @@ def simulate_post_conversion_state(current_state, success):
     Simulates the post-play game state following a successful or failed conversion attempt for win probability prediction.
     """
     state = current_state.copy()
-    state["seconds_remaining"] = max(state["seconds_remaining"].astype(float) - 6, 0)
+    state["seconds_remaining"] = max(state["seconds_remaining"] - 6, 0)
+    possession_swapped = False
+
     if success:
-        # If successful conversion would mean a touchdown
+        # If a successful conversion would mean a touchdown
         if state["yardline"] - state["yards_to_go"] == 0:
             state["score_diff"] += 7
             state["yardline"] = 75
             state = swap_possession(state)
+            possession_swapped = True
         else:
             state["yardline"] = state["yardline"] - state["yards_to_go"]
+            state["is_goal_to_go"] = (state["yardline"] <= 10).astype(int)
+            state["is_red_zone"] = (state["yardline"] <= 20).astype(int)
     else:
         state["yardline"] = 100 - state["yardline"]
         state = swap_possession(state)
+        possession_swapped = True
 
-    return state
+    return state, possession_swapped
 
 
 def simulate_post_field_goal_state(current_state, success):
@@ -388,7 +394,7 @@ def simulate_post_field_goal_state(current_state, success):
     Simulates the post-play game state following a field goal make or miss for win probability prediction.
     """
     state = current_state.copy()
-    state["seconds_remaining"] = max(state["seconds_remaining"].astype(float) - 5, 0)
+    state["seconds_remaining"] = max(state["seconds_remaining"] - 5, 0)
     if success:
         state["score_diff"] += 3
         state["yardline"] = 75
@@ -396,7 +402,7 @@ def simulate_post_field_goal_state(current_state, success):
         state["yardline"] = 100 - (state["yardline"] + 7)
 
     state = swap_possession(state)
-    return state
+    return state, True
 
 
 def simulate_post_punt_state(current_state, success):
@@ -404,25 +410,34 @@ def simulate_post_punt_state(current_state, success):
     Simulates the post-play game state following a "successful" or "failed" punt for win probability prediction.
     """
     state = current_state.copy()
-    state["seconds_remaining"] = (state["seconds_remaining"].astype(float) - 6, 0)
+    state["seconds_remaining"] = max(state["seconds_remaining"] - 6, 0)
 
     if success:
         state["yardline"] = random.randint(75, 90)
-
     else:
         state["yardline"] = random.randint(60, 70)
 
     state = swap_possession(state)
-    return state
+    return state, True
 
 
 def predict_wp_outcomes(current_state, wp_models, simulator):
     """
     Returns the predicted post-play win probabilities for both attempt outcomes (success/failure) for expected win probability calculation.
     """
-    success_state = simulator(current_state, True)
-    failure_state = simulator(current_state, False)
-    return predict_wp_after_play(wp_models["success"], success_state), predict_wp_after_play(wp_models["failure"], failure_state)
+    success_state, success_possession_swapped = simulator(current_state, True)
+    failure_state, failure_possession_swapped = simulator(current_state, False)
+
+    wp_if_success = predict_wp_after_play(wp_models["success"], success_state)
+    wp_if_failure = predict_wp_after_play(wp_models["failure"], failure_state)
+
+    # If possession was swapped in the simulated states, get the WP for the team that made the 4th down decision (model will predict WP for the opposing team)
+    if success_possession_swapped:
+        wp_if_success = 1 - wp_if_success
+    if failure_possession_swapped:
+        wp_if_failure = 1 - wp_if_failure
+
+    return wp_if_success, wp_if_failure
 
 
 def predict_conversion_wp_outcomes(current_state, conversion_wp_models):
