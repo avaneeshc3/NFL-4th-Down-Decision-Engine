@@ -79,6 +79,7 @@ def build_conversion_success_model(conversion_df):
     model_df["wp"] = model_df["wp"].fillna(0.5)
     model_df["def_wp"] = model_df["def_wp"].fillna(0.5)
     model_df["wp_diff"] = model_df["wp"] - model_df["def_wp"]
+    model_df["wp_after"] = model_df["wp_after"].fillna(model_df["wp"])
 
     model_df["success"] = ((model_df["yards_gained"].fillna(0) >= model_df["yards_to_go"]) | (model_df["touchdown"].fillna(0) == 1)).astype(int)
     model_df["team_recent_conversion_success"] = model_df.groupby(["season", "posteam"])["success"].transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean())
@@ -281,6 +282,9 @@ def build_wp_models(df, model_name):
         "epa_diff"
     ]
 
+    df = df.sort_values(["game_id", "play_id"]).copy()
+    # Create a win probability after play column (using win probability at start of the next play) for expected win probability calculation
+    df["wp_after"] = df.groupby("game_id")["wp"].shift(-1)
     df = create_wp_features(df)
     df = df.dropna(subset=features + ["wp_after"])
     # Get the resulting game state after the play (using state at start of next play) to base win probability prediction on
