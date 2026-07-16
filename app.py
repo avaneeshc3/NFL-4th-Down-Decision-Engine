@@ -65,7 +65,8 @@ punt_wp_models = load_punt_wp_models()
 
 st.set_page_config(page_title="NFL 4th Down Decision Engine", layout="wide")
 st.title("NFL 4th Down Decision Engine")
-st.markdown('Enter game situation details and click "Generate Recommendation" to get the recommended decision that maximizes expected win probability.')
+st.markdown('Enter game situation details and click "Generate Recommendation" to get the recommended play decision that maximizes expected win probability.')
+st.markdown("_Note: View in dark mode (toggle in menu)_")
 st.divider()
 
 st.header("Game Situation Details")
@@ -151,11 +152,29 @@ punt_expected_wp = calculate_expected_wp(punt_success_prob, punt_success_wp, pun
 
 # Display expected win probability visuals on user button click
 if st.button("Generate Recommendation"):
+    st.divider()
     st.header("Expected Win Probabilities")
+    st.text("")
     col1, col2, col3 = st.columns(3)
     with col1:
-        streamviz.gauge(conversion_expected_wp, "GO FOR IT", sFix="%", gSize="MED")
+        streamviz.gauge(conversion_expected_wp, "GO FOR IT", sFix="%", gTheme="White", gSize="MED")
     with col2:
-        streamviz.gauge(field_goal_expected_wp, "FIELD GOAL", sFix="%", gSize="MED")
+        streamviz.gauge(field_goal_expected_wp, "FIELD GOAL", sFix="%", gTheme="White", gSize="MED")
     with col3:
-        streamviz.gauge(punt_expected_wp, "PUNT", sFix="%", gSize="MED")
+        streamviz.gauge(punt_expected_wp, "PUNT", sFix="%", gTheme="White", gSize="MED")
+
+    if max(conversion_expected_wp, field_goal_expected_wp, punt_expected_wp) == conversion_expected_wp:
+        recommendation = "GO FOR IT"
+    elif max(conversion_expected_wp, field_goal_expected_wp, punt_expected_wp) == field_goal_expected_wp:
+        recommendation = "KICK FIELD GOAL"
+    else:
+        recommendation = "PUNT"
+
+    st.markdown(
+        f"""
+        <h3 style="margin-top: -170px; font: sans-serif; font-size: 32px; font-weight: 600; color: White;">
+            Recommendation: {recommendation}
+        </h3>
+        """,
+        unsafe_allow_html=True
+    )

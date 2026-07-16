@@ -69,19 +69,19 @@ def build_conversion_success_model(conversion_df):
     model_df["team_recent_epa"] = model_df.groupby(["season", "posteam"])["epa_value"].transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean())
     model_df["def_recent_epa"] = model_df.groupby(["season", "defteam"])["epa_value"].transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean())
 
-    model_df["is_goal_to_go"] = int(model_df["goal_to_go"] == 1)
-    model_df["is_red_zone"] = int(model_df["yardline"] <= 20)
-    model_df["is_short_yardage"] = int(model_df["yards_to_go"] <= 2)
+    model_df["is_goal_to_go"] = (model_df["goal_to_go"] == 1).astype(int)
+    model_df["is_red_zone"] = (model_df["yardline"] <= 20).astype(int)
+    model_df["is_short_yardage"] = (model_df["yards_to_go"] <= 2).astype(int)
     model_df["quarter"] = model_df["qtr"].fillna(5)
     model_df["seconds_remaining"] = model_df["game_seconds_remaining"].fillna(1800)
     model_df["score_diff"] = model_df["score_differential"].fillna(0)
-    model_df["is_home"] = int(model_df["posteam"] == model_df["home_team"])
+    model_df["is_home"] = (model_df["posteam"] == model_df["home_team"]).astype(int)
     model_df["wp"] = model_df["wp"].fillna(0.5)
     model_df["def_wp"] = model_df["def_wp"].fillna(0.5)
     model_df["wp_diff"] = model_df["wp"] - model_df["def_wp"]
     model_df["wp_after"] = model_df["wp_after"].fillna(model_df["wp"])
 
-    model_df["success"] = int((model_df["yards_gained"].fillna(0) >= model_df["yards_to_go"]) | (model_df["touchdown"].fillna(0) == 1))
+    model_df["success"] = ((model_df["yards_gained"].fillna(0) >= model_df["yards_to_go"]) | (model_df["touchdown"].fillna(0) == 1)).astype(int)
     model_df["team_recent_conversion_success"] = model_df.groupby(["season", "posteam"])["success"].transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean())
     model_df["def_recent_conversion_success"] = model_df.groupby(["season", "defteam"])["success"].transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean())
 
@@ -139,12 +139,12 @@ def build_field_goal_success_model(field_goal_df):
     model_df["quarter"] = model_df["qtr"].fillna(5)
     model_df["seconds_remaining"] = model_df["game_seconds_remaining"].fillna(1800)
     model_df["score_diff"] = model_df["score_differential"].fillna(0)
-    model_df["is_home"] = int(model_df["posteam"] == model_df["home_team"])
+    model_df["is_home"] = (model_df["posteam"] == model_df["home_team"]).astype(int)
     model_df["wp"] = model_df["wp"].fillna(0.5)
     model_df["temp"] = model_df["temp"].fillna(70)
     model_df["wind"] = model_df["wind"].fillna(0)
 
-    model_df["success"] = int(model_df["field_goal_result"] == "made")
+    model_df["success"] = (model_df["field_goal_result"] == "made").astype(int)
 
     features = [
         "kick_distance",
@@ -201,12 +201,12 @@ def build_punt_success_model(punt_df):
     model_df["quarter"] = model_df["qtr"].fillna(5)
     model_df["seconds_remaining"] = model_df["game_seconds_remaining"].fillna(1800)
     model_df["score_diff"] = model_df["score_differential"].fillna(0)
-    model_df["is_home"] = int(model_df["posteam"] == model_df["home_team"])
+    model_df["is_home"] = (model_df["posteam"] == model_df["home_team"]).astype(int)
     model_df["wp"] = model_df["wp"].fillna(0.5)
     model_df["temp"] = model_df["temp"].fillna(70)
     model_df["wind"] = model_df["wind"].fillna(0)
 
-    model_df["success"] = int(model_df["yardline"] - model_df["kick_distance"] + model_df["return_yards"] <= 25)
+    model_df["success"] = (model_df["yardline"] - model_df["kick_distance"] + model_df["return_yards"] <= 25).astype(int)
 
     features = [
         "yardline",
@@ -251,9 +251,9 @@ def create_wp_features(df):
     df["quarter"] = df["qtr"].fillna(5)
     df["seconds_remaining"] = df["game_seconds_remaining"].fillna(1800)
     df["score_diff"] = df["score_differential"].fillna(0)
-    df["is_home"] = int(df["posteam"] == df["home_team"])
-    df["is_goal_to_go"] = int(df["goal_to_go"] == 1)
-    df["is_red_zone"] = int(df["yardline"] <= 20)
+    df["is_home"] = (df["posteam"] == df["home_team"]).astype(int)
+    df["is_goal_to_go"] = (df["goal_to_go"] == 1).astype(int)
+    df["is_red_zone"] = (df["yardline"] <= 20).astype(int)
     df["epa_value"] = df["epa"].fillna(0)
     df["team_play_count"] = df.groupby(["season", "posteam"]).cumcount()
     df["def_play_count"] = df.groupby(["season", "defteam"]).cumcount()
@@ -288,15 +288,13 @@ def build_wp_models(df, model_name):
     df = create_wp_features(df)
     df = df.dropna(subset=features + ["wp_after"])
     # Get the resulting game state after the play (using state at start of next play) to base win probability prediction on
-    next_features = [f"next_{feature}" for feature in features]
-    df[next_features] = df.groupby("game_id")[features].shift(-1)
-    df = df.dropna(subset=next_features + ["wp_after"])
+    df[features] = df.groupby("game_id")[features].shift(-1)
 
     # Build separate models for if the attempt succeeds or fails
     models = {}
     for outcome_value, outcome_name in [(1, "success"), (0, "failure")]:
         matches = df[df["success"] == outcome_value]
-        feature_df = matches[next_features].fillna(0)
+        feature_df = matches[features].fillna(0)
         y = matches["wp_after"]
 
         X_train, X_test, y_train, y_test = train_test_split(feature_df, y, test_size=0.25, random_state=42)
@@ -365,8 +363,8 @@ def swap_possession(state):
     state.loc[0, "team_recent_epa"] = def_recent_epa
     state.loc[0, "def_recent_epa"] = team_recent_epa
     state.loc[0, "epa_diff"] = -epa_diff
-    state.loc[0, "is_goal_to_go"] = int(yardline - yards_to_go == 0)
-    state.loc[0, "is_red_zone"] = int(yardline <= 20)
+    state.loc[0, "is_goal_to_go"] = (yardline - yards_to_go == 0).astype(int)
+    state.loc[0, "is_red_zone"] = (yardline <= 20).astype(int)
     return state
 
 
@@ -390,8 +388,8 @@ def simulate_post_conversion_state(current_state, success):
             yards_to_go = state.iloc[0]["yards_to_go"]
             new_yardline = current_yardline - yards_to_go
             state.loc[0, "yardline"] = new_yardline
-            state.loc[0, "is_goal_to_go"] = int(new_yardline - yards_to_go == 0)
-            state.loc[0, "is_red_zone"] = int(new_yardline <= 20)
+            state.loc[0, "is_goal_to_go"] = (new_yardline - yards_to_go == 0).astype(int)
+            state.loc[0, "is_red_zone"] = (new_yardline <= 20).astype(int)
     else:
         current_yardline = state.iloc[0]["yardline"]
         state.loc[0, "yardline"] = 100 - current_yardline
