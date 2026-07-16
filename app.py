@@ -8,6 +8,7 @@ from engine import (
     predict_punt_wp_outcomes,
     calculate_expected_wp
 )
+import streamviz
 
 
 # Load all the success probability/win probability models for prediction
@@ -47,11 +48,19 @@ def load_punt_wp_models():
         return pickle.load(f)
 
 
-conversion_success_model = load_conversion_success_model()
+conversion_artifact = load_conversion_success_model()
+conversion_success_model = conversion_artifact["model"]
+conversion_features = conversion_artifact["features"]
 conversion_wp_models = load_conversion_wp_models()
-field_goal_success_model = load_field_goal_success_model()
+
+field_goal_artifact = load_field_goal_success_model()
+field_goal_success_model = field_goal_artifact["model"]
+field_goal_features = field_goal_artifact["features"]
 field_goal_wp_models = load_field_goal_wp_models()
-punt_success_model = load_punt_success_model()
+
+punt_artifact = load_punt_success_model()
+punt_success_model = punt_artifact["model"]
+punt_features = punt_artifact["features"]
 punt_wp_models = load_punt_wp_models()
 
 st.set_page_config(page_title="NFL 4th Down Decision Engine", layout="wide")
@@ -77,7 +86,7 @@ wp = st.slider("Team Win Probability", 0.0, 1.0)
 team_run_tendency = st.slider("Team Run Play Tendency", 0.0, 1.0)
 team_recent_conversion_success = st.slider("Team Recent Conversion Success Rate (Last 10 Plays)", 0.0, 1.0)
 def_recent_conversion_success = st.slider("Opponent Recent Conversion Prevention Rate (Last 10 Plays)", 0.0, 1.0)
-temp = st.number_input("Temperature (°F)")
+temp = st.number_input("Temperature (°F)", value=0)
 wind = st.number_input("Wind (mph)", min_value=0)
 
 
@@ -86,9 +95,9 @@ if side_of_field == "OWN":
     yardline = 100 - yardline
 team_pass_tendency = 1 - team_run_tendency
 epa_diff = team_epa - def_epa
-is_goal_to_go = (yardline - yards_to_go == 0).astype(int)
-is_red_zone = (yardline <= 20).astype(int)
-is_short_yardage = (yards_to_go <= 2).astype(int)
+is_goal_to_go = int(yardline - yards_to_go == 0)
+is_red_zone = int(yardline <= 20)
+is_short_yardage = int(yards_to_go <= 2)
 seconds_remaining = quarter_minutes_remaining * 60 + quarter_seconds_remaining
 # Add full 15 minutes (900 seconds) for unstarted quarters
 for i in range(quarter, 4):
@@ -127,4 +136,26 @@ situation_data = pd.DataFrame({
     "wind": [wind]
 })
 
-# Calculate success probabilities/win probabilities and overall expected win probabilities for each play option
+# Predict success probabilities/win probabilities and overall expected win probabilities for each play option
+conversion_success_prob = predict_success_prob(conversion_success_model, situation_data, conversion_features)
+conversion_success_wp, conversion_failure_wp = predict_conversion_wp_outcomes(situation_data, conversion_wp_models)
+conversion_expected_wp = calculate_expected_wp(conversion_success_prob, conversion_success_wp, conversion_failure_wp)
+
+field_goal_success_prob = predict_success_prob(field_goal_success_model, situation_data, field_goal_features)
+field_goal_success_wp, field_goal_failure_wp = predict_field_goal_wp_outcomes(situation_data, field_goal_wp_models)
+field_goal_expected_wp = calculate_expected_wp(field_goal_success_prob, field_goal_success_wp, field_goal_failure_wp)
+
+punt_success_prob = predict_success_prob(punt_success_model, situation_data, punt_features)
+punt_success_wp, punt_failure_wp = predict_punt_wp_outcomes(situation_data, punt_wp_models)
+punt_expected_wp = calculate_expected_wp(punt_success_prob, punt_success_wp, punt_failure_wp)
+
+# Display expected win probability visuals on user button click
+if st.button("Generate Recommendation"):
+    st.header("Expected Win Probabilities")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        streamviz.gauge(conversion_expected_wp, "GO FOR IT", sFix="%", gSize="MED")
+    with col2:
+        streamviz.gauge(field_goal_expected_wp, "FIELD GOAL", sFix="%", gSize="MED")
+    with col3:
+        streamviz.gauge(punt_expected_wp, "PUNT", sFix="%", gSize="MED")

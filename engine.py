@@ -69,19 +69,19 @@ def build_conversion_success_model(conversion_df):
     model_df["team_recent_epa"] = model_df.groupby(["season", "posteam"])["epa_value"].transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean())
     model_df["def_recent_epa"] = model_df.groupby(["season", "defteam"])["epa_value"].transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean())
 
-    model_df["is_goal_to_go"] = (model_df["goal_to_go"] == 1).astype(int)
-    model_df["is_red_zone"] = (model_df["yardline"] <= 20).astype(int)
-    model_df["is_short_yardage"] = (model_df["yards_to_go"] <= 2).astype(int)
+    model_df["is_goal_to_go"] = int(model_df["goal_to_go"] == 1)
+    model_df["is_red_zone"] = int(model_df["yardline"] <= 20)
+    model_df["is_short_yardage"] = int(model_df["yards_to_go"] <= 2)
     model_df["quarter"] = model_df["qtr"].fillna(5)
     model_df["seconds_remaining"] = model_df["game_seconds_remaining"].fillna(1800)
     model_df["score_diff"] = model_df["score_differential"].fillna(0)
-    model_df["is_home"] = (model_df["posteam"] == model_df["home_team"]).astype(int)
+    model_df["is_home"] = int(model_df["posteam"] == model_df["home_team"])
     model_df["wp"] = model_df["wp"].fillna(0.5)
     model_df["def_wp"] = model_df["def_wp"].fillna(0.5)
     model_df["wp_diff"] = model_df["wp"] - model_df["def_wp"]
     model_df["wp_after"] = model_df["wp_after"].fillna(model_df["wp"])
 
-    model_df["success"] = ((model_df["yards_gained"].fillna(0) >= model_df["yards_to_go"]) | (model_df["touchdown"].fillna(0) == 1)).astype(int)
+    model_df["success"] = int((model_df["yards_gained"].fillna(0) >= model_df["yards_to_go"]) | (model_df["touchdown"].fillna(0) == 1))
     model_df["team_recent_conversion_success"] = model_df.groupby(["season", "posteam"])["success"].transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean())
     model_df["def_recent_conversion_success"] = model_df.groupby(["season", "defteam"])["success"].transform(lambda s: s.shift(1).rolling(10, min_periods=1).mean())
 
@@ -139,12 +139,12 @@ def build_field_goal_success_model(field_goal_df):
     model_df["quarter"] = model_df["qtr"].fillna(5)
     model_df["seconds_remaining"] = model_df["game_seconds_remaining"].fillna(1800)
     model_df["score_diff"] = model_df["score_differential"].fillna(0)
-    model_df["is_home"] = (model_df["posteam"] == model_df["home_team"]).astype(int)
+    model_df["is_home"] = int(model_df["posteam"] == model_df["home_team"])
     model_df["wp"] = model_df["wp"].fillna(0.5)
     model_df["temp"] = model_df["temp"].fillna(70)
     model_df["wind"] = model_df["wind"].fillna(0)
 
-    model_df["success"] = (model_df["field_goal_result"] == "made").astype(int)
+    model_df["success"] = int(model_df["field_goal_result"] == "made")
 
     features = [
         "kick_distance",
@@ -201,12 +201,12 @@ def build_punt_success_model(punt_df):
     model_df["quarter"] = model_df["qtr"].fillna(5)
     model_df["seconds_remaining"] = model_df["game_seconds_remaining"].fillna(1800)
     model_df["score_diff"] = model_df["score_differential"].fillna(0)
-    model_df["is_home"] = (model_df["posteam"] == model_df["home_team"]).astype(int)
+    model_df["is_home"] = int(model_df["posteam"] == model_df["home_team"])
     model_df["wp"] = model_df["wp"].fillna(0.5)
     model_df["temp"] = model_df["temp"].fillna(70)
     model_df["wind"] = model_df["wind"].fillna(0)
 
-    model_df["success"] = (model_df["yardline"] - model_df["kick_distance"] + model_df["return_yards"] <= 25).astype(int)
+    model_df["success"] = int(model_df["yardline"] - model_df["kick_distance"] + model_df["return_yards"] <= 25)
 
     features = [
         "yardline",
@@ -251,9 +251,9 @@ def create_wp_features(df):
     df["quarter"] = df["qtr"].fillna(5)
     df["seconds_remaining"] = df["game_seconds_remaining"].fillna(1800)
     df["score_diff"] = df["score_differential"].fillna(0)
-    df["is_home"] = (df["posteam"] == df["home_team"]).astype(int)
-    df["is_goal_to_go"] = (df["goal_to_go"] == 1).astype(int)
-    df["is_red_zone"] = (df["yardline"] <= 20).astype(int)
+    df["is_home"] = int(df["posteam"] == df["home_team"])
+    df["is_goal_to_go"] = int(df["goal_to_go"] == 1)
+    df["is_red_zone"] = int(df["yardline"] <= 20)
     df["epa_value"] = df["epa"].fillna(0)
     df["team_play_count"] = df.groupby(["season", "posteam"]).cumcount()
     df["def_play_count"] = df.groupby(["season", "defteam"]).cumcount()
@@ -352,12 +352,21 @@ def swap_possession(state):
     Updates the game state to reflect possession by the opposing team after certain play attempts and outcomes.
     """
     state = state.copy()
-    state["score_diff"] = -state["score_diff"]
-    state["is_home"] = 1 - state["is_home"]
-    state[["team_recent_epa", "def_recent_epa"]] = state[["def_recent_epa", "team_recent_epa"]]
-    state["epa_diff"] = -state["epa_diff"]
-    state["is_goal_to_go"] = (state["yardline"] - state["yards_to_go"] == 0).astype(int)
-    state["is_red_zone"] = (state["yardline"] <= 20).astype(int)
+    score_diff = state.iloc[0]["score_diff"]
+    is_home = state.iloc[0]["is_home"]
+    team_recent_epa = state.iloc[0]["team_recent_epa"]
+    def_recent_epa = state.iloc[0]["def_recent_epa"]
+    epa_diff = state.iloc[0]["epa_diff"]
+    yardline = state.iloc[0]["yardline"]
+    yards_to_go = state.iloc[0]["yards_to_go"]
+
+    state.loc[0, "score_diff"] = -score_diff
+    state.loc[0, "is_home"] = 1 - is_home
+    state.loc[0, "team_recent_epa"] = def_recent_epa
+    state.loc[0, "def_recent_epa"] = team_recent_epa
+    state.loc[0, "epa_diff"] = -epa_diff
+    state.loc[0, "is_goal_to_go"] = int(yardline - yards_to_go == 0)
+    state.loc[0, "is_red_zone"] = int(yardline <= 20)
     return state
 
 
@@ -366,22 +375,26 @@ def simulate_post_conversion_state(current_state, success):
     Simulates the post-play game state following a successful or failed conversion attempt for win probability prediction.
     """
     state = current_state.copy()
-    state["seconds_remaining"] = max(state["seconds_remaining"] - 6, 0)
+    state.loc[0, "seconds_remaining"] = max(state.iloc[0]["seconds_remaining"] - 6, 0)
     possession_swapped = False
 
     if success:
         # If a successful conversion would mean a touchdown
-        if state["is_goal_to_go"] == 1:
-            state["score_diff"] += 7
-            state["yardline"] = 75
+        if state.iloc[0]["is_goal_to_go"] == 1:
+            state.loc[0, "score_diff"] = state.iloc[0]["score_diff"] + 7
+            state.loc[0, "yardline"] = 75
             state = swap_possession(state)
             possession_swapped = True
         else:
-            state["yardline"] = state["yardline"] - state["yards_to_go"]
-            state["is_goal_to_go"] = (state["yardline"] - state["yards_to_go"] == 0).astype(int)
-            state["is_red_zone"] = (state["yardline"] <= 20).astype(int)
+            current_yardline = state.iloc[0]["yardline"]
+            yards_to_go = state.iloc[0]["yards_to_go"]
+            new_yardline = current_yardline - yards_to_go
+            state.loc[0, "yardline"] = new_yardline
+            state.loc[0, "is_goal_to_go"] = int(new_yardline - yards_to_go == 0)
+            state.loc[0, "is_red_zone"] = int(new_yardline <= 20)
     else:
-        state["yardline"] = 100 - state["yardline"]
+        current_yardline = state.iloc[0]["yardline"]
+        state.loc[0, "yardline"] = 100 - current_yardline
         state = swap_possession(state)
         possession_swapped = True
 
@@ -393,12 +406,13 @@ def simulate_post_field_goal_state(current_state, success):
     Simulates the post-play game state following a field goal make or miss for win probability prediction.
     """
     state = current_state.copy()
-    state["seconds_remaining"] = max(state["seconds_remaining"] - 5, 0)
+    state.loc[0, "seconds_remaining"] = max(state.iloc[0]["seconds_remaining"] - 5, 0)
     if success:
-        state["score_diff"] += 3
-        state["yardline"] = 75
+        state.loc[0, "score_diff"] = state.iloc[0]["score_diff"] + 3
+        state.loc[0, "yardline"] = 75
     else:
-        state["yardline"] = 100 - (state["yardline"] + 7)
+        current_yardline = state.iloc[0]["yardline"]
+        state.loc[0, "yardline"] = 100 - (current_yardline + 7)
 
     state = swap_possession(state)
     return state, True
@@ -409,12 +423,12 @@ def simulate_post_punt_state(current_state, success):
     Simulates the post-play game state following a "successful" or "failed" punt for win probability prediction.
     """
     state = current_state.copy()
-    state["seconds_remaining"] = max(state["seconds_remaining"] - 6, 0)
+    state.loc[0, "seconds_remaining"] = max(state.iloc[0]["seconds_remaining"] - 6, 0)
 
     if success:
-        state["yardline"] = random.randint(75, 90)
+        state.loc[0, "yardline"] = random.randint(75, 90)
     else:
-        state["yardline"] = random.randint(60, 70)
+        state.loc[0, "yardline"] = random.randint(60, 70)
 
     state = swap_possession(state)
     return state, True
@@ -427,16 +441,16 @@ def predict_wp_outcomes(current_state, wp_models, simulator):
     success_state, success_possession_swapped = simulator(current_state, True)
     failure_state, failure_possession_swapped = simulator(current_state, False)
 
-    wp_if_success = predict_wp_after_play(wp_models["success"], success_state)
-    wp_if_failure = predict_wp_after_play(wp_models["failure"], failure_state)
+    success_wp = predict_wp_after_play(wp_models["success"], success_state)
+    failure_wp = predict_wp_after_play(wp_models["failure"], failure_state)
 
     # If possession was swapped in the simulated states, get the WP for the team that made the 4th down decision (model will predict WP for the opposing team)
     if success_possession_swapped:
-        wp_if_success = 1 - wp_if_success
+        success_wp = 1 - success_wp
     if failure_possession_swapped:
-        wp_if_failure = 1 - wp_if_failure
+        failure_wp = 1 - failure_wp
 
-    return wp_if_success, wp_if_failure
+    return success_wp, failure_wp
 
 
 def predict_conversion_wp_outcomes(current_state, conversion_wp_models):
@@ -451,11 +465,11 @@ def predict_punt_wp_outcomes(current_state, punt_wp_models):
     return predict_wp_outcomes(current_state, punt_wp_models, simulate_post_punt_state)
 
 
-def calculate_expected_wp(success_prob, wp_if_success, wp_if_failure):
+def calculate_expected_wp(success_prob, success_wp, failure_wp):
     """
     Calculates the expected win probability of the play decision, taking into account the success probability of the play and the win probabilities if it succeeds/fails.
     """
-    return (success_prob * wp_if_success + (1 - success_prob) * wp_if_failure)
+    return (success_prob * success_wp + (1 - success_prob) * failure_wp)
 
 
 def main():
